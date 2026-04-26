@@ -443,6 +443,7 @@ def main(
     local_branch_name: str,
     remote_name: str,
     remote_branch_name: str,
+    include_source_hash: bool = True,
 ) -> None:
     """
     Create commits on a remote branch for each commit on the local branch that's not on the remote
@@ -509,7 +510,8 @@ def main(
         commit_message_lines = commit_message.split("\n")
         headline = commit_message_lines[0]
         body = "\n".join(commit_message_lines[1:])
-        body += f"\n\nThis commit was created from the local commit with hash {local_commit_hash}."
+        if include_source_hash:
+            body += f"\n\nThis commit was created from the local commit with hash {local_commit_hash}."
         commit_message = CommitMessage(headline=headline, body=body)
 
         file_changes = get_file_changes_from_local_commit_hash(local_commit_hash)
@@ -629,6 +631,12 @@ if __name__ == "__main__":
     parser.add_argument("remote_name", help="Remote name")
     parser.add_argument("remote_branch_name", help="Remote branch name")
     parser.add_argument("log_level", default="WARN", help="Log level", type=str)
+    parser.add_argument(
+        "--no-source-hash",
+        dest="include_source_hash",
+        action="store_false",
+        help="Omit the trailing 'This commit was created from the local commit with hash ...' line from each commit's body.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level)
@@ -645,4 +653,5 @@ if __name__ == "__main__":
         local_branch_name=args.local_branch_name,
         remote_name=args.remote_name,
         remote_branch_name=args.remote_branch_name,
+        include_source_hash=args.include_source_hash,
     )
