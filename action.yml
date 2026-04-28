@@ -41,6 +41,9 @@ inputs:
   include_source_hash:
     description: "If 'true' (default), each remote commit's body is suffixed with the local commit hash it was derived from. Set to 'false' to omit this suffix (useful when the local hash is transient/meaningless to readers)."
     default: 'true'
+  force_reset_ref:
+    description: "If 'true', force-push the remote branch to the merge-base just before creating signed commits. Skips the divergence check; any commits on the remote branch beyond the merge-base will be lost."
+    default: 'false'
 runs:
   using: 'composite'
   steps:
@@ -62,6 +65,9 @@ runs:
         if [ "$INCLUDE_SOURCE_HASH" = "false" ]; then
           EXTRA_ARGS+=(--no-source-hash)
         fi
+        if [ "$FORCE_RESET_REF" = "true" ]; then
+          EXTRA_ARGS+=(--force-reset-ref)
+        fi
         python ${{ github.action_path }}/create_commits.py "$GITHUB_TOKEN" "$REPO" "$LOCAL_BRANCH_NAME" "$REMOTE_NAME" "$REMOTE_BRANCH_NAME" "$LOG_LEVEL" "${EXTRA_ARGS[@]}"
       shell: bash
       env:
@@ -72,6 +78,7 @@ runs:
         REMOTE_NAME: ${{ inputs.remote_name }}
         LOG_LEVEL: ${{ inputs.log_level }}
         INCLUDE_SOURCE_HASH: ${{ inputs.include_source_hash }}
+        FORCE_RESET_REF: ${{ inputs.force_reset_ref }}
     # The createCommitOnBranch endpoint will dynamically generate authorship and commit verification information, which will result in different commit hashes on the remote vs. local branch. 
     # If the creation of remote commits is successful, a final step runs. This step will reset the local branch to have the same authorship info, verification status, and therefore commit hash (which is deterministically derived from commit contents) as the remote. 
     - name: Reset the local branch to the remote branch

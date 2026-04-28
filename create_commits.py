@@ -444,6 +444,7 @@ def main(
     remote_name: str,
     remote_branch_name: str,
     include_source_hash: bool = True,
+    force_reset_ref: bool = False,
 ) -> None:
     """
     Create commits on a remote branch for each commit on the local branch that's not on the remote
@@ -474,25 +475,41 @@ def main(
         check=True,
     ).stdout.strip()
 
-    # Verify that the remote branch has not diverged from the local branch. If it has, bail
-    # immediately.
-    if (
-        fetch_remote_branch_and_get_head_oid(remote_name, remote_branch_name)
-        != merge_base_commit_oid
-    ):
-        raise RemoteBranchDivergedError(
-            f"The remote branch {remote_name}/{remote_branch_name} has diverged from the local "
-            f"branch {local_branch_name}. Aborting."
-        )
+    # Verify that the remote branch has not diverged from the local branch. Skipped when
+    # force_reset_ref is set, since we'll force-push to the merge-base ourselves below.
+    if not force_reset_ref:
+        if (
+            fetch_remote_branch_and_get_head_oid(remote_name, remote_branch_name)
+            != merge_base_commit_oid
+        ):
+            raise RemoteBranchDivergedError(
+                f"The remote branch {remote_name}/{remote_branch_name} has diverged from the local "
+                f"branch {local_branch_name}. Aborting."
+            )
 
     ################################################################################################
     ####### Get the list of commits on the local branch that are not on the remote branch. #########
     ################################################################################################
 
-    # List of hashes for commit on the local branch that are not on the remote branch
-    new_commit_local_hashes: list[str] = get_local_commits_not_on_remote(
-        local_branch_name, remote_name, remote_branch_name
-    )
+    # List of hashes for commits to push, oldest first. With force_reset_ref, we'll be force-pushing
+    # remote/branch to merge-base, so the relevant set is everything in local since merge-base
+    # (rather than everything in local not in remote, which can differ if local has merged from
+    # remote).
+    if force_reset_ref:
+        new_commit_local_hashes: list[str] = subprocess.run(
+            ["git", "rev-list", f"{merge_base_commit_oid}..{local_branch_name}"],
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True,
+        ).stdout.splitlines()[::-1]
+        logging.info(
+            "Found %s commits on the local branch since merge-base.",
+            len(new_commit_local_hashes),
+        )
+    else:
+        new_commit_local_hashes = get_local_commits_not_on_remote(
+            local_branch_name, remote_name, remote_branch_name
+        )
 
     ################################################################################################
     ####### Prepare the FileChanges and CommitMessage objects for each commit to be created. #######
@@ -516,6 +533,30 @@ def main(
 
         file_changes = get_file_changes_from_local_commit_hash(local_commit_hash)
         new_commits_to_create.append((local_commit_hash, commit_message, file_changes))
+
+    ################################################################################################
+    ####### If requested, force-push remote/branch to merge-base just before the API loop.    ######
+    ################################################################################################
+
+    # Done here, after all the slow file-change building, so the window between "remote branch
+    # is at merge-base" and "first signed commit lands" is as short as possible. Any commits
+    # on the remote branch beyond merge-base will be lost.
+    if force_reset_ref:
+        logging.warning(
+            "Force-pushing %s/%s to merge-base %s; remote commits beyond this point will be lost.",
+            remote_name,
+            remote_branch_name,
+            merge_base_commit_oid,
+        )
+        subprocess.run(
+            [
+                "git",
+                "push",
+                remote_name,
+                f"+{merge_base_commit_oid}:refs/heads/{remote_branch_name}",
+            ],
+            check=True,
+        )
 
     ################################################################################################
     ####### Create the commits on the remote branch using the Github GraphQL endpoint ##############
@@ -637,6 +678,12 @@ if __name__ == "__main__":
         action="store_false",
         help="Omit the trailing 'This commit was created from the local commit with hash ...' line from each commit's body.",
     )
+    parser.add_argument(
+        "--force-reset-ref",
+        dest="force_reset_ref",
+        action="store_true",
+        help="Force-push the remote branch to the merge-base immediately before creating signed commits. Any commits on the remote branch beyond the merge-base will be lost.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level)
@@ -654,4 +701,5 @@ if __name__ == "__main__":
         remote_name=args.remote_name,
         remote_branch_name=args.remote_branch_name,
         include_source_hash=args.include_source_hash,
+        force_reset_ref=args.force_reset_ref,
     )
