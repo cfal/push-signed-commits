@@ -47,6 +47,9 @@ inputs:
   exclude_paths:
     description: "Newline-separated list of paths to exclude from each commit's file changes. Each line is matched against file paths as an exact match or as a directory prefix. Commits whose changes are entirely excluded are skipped."
     default: ''
+  parent_ref:
+    description: "Ref to use as the parent of the first new commit, instead of merge-base(local, remote/branch). Use this when local and remote point at the same commit (e.g., signing PR commits without squashing). Pair with force_reset_ref: 'true' to actually move the remote branch to this ref."
+    default: ''
 runs:
   using: 'composite'
   steps:
@@ -71,6 +74,9 @@ runs:
         if [ "$FORCE_RESET_REF" = "true" ]; then
           EXTRA_ARGS+=(--force-reset-ref)
         fi
+        if [ -n "$PARENT_REF" ]; then
+          EXTRA_ARGS+=(--parent-ref "$PARENT_REF")
+        fi
         while IFS= read -r path; do
           if [ -n "$path" ]; then
             EXTRA_ARGS+=(--exclude-path "$path")
@@ -88,6 +94,7 @@ runs:
         INCLUDE_SOURCE_HASH: ${{ inputs.include_source_hash }}
         FORCE_RESET_REF: ${{ inputs.force_reset_ref }}
         EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
+        PARENT_REF: ${{ inputs.parent_ref }}
     # The createCommitOnBranch endpoint will dynamically generate authorship and commit verification information, which will result in different commit hashes on the remote vs. local branch. 
     # If the creation of remote commits is successful, a final step runs. This step will reset the local branch to have the same authorship info, verification status, and therefore commit hash (which is deterministically derived from commit contents) as the remote. 
     - name: Reset the local branch to the remote branch

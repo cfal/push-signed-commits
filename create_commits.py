@@ -467,6 +467,7 @@ def main(
     include_source_hash: bool = True,
     force_reset_ref: bool = False,
     exclude_paths: Optional[list[str]] = None,
+    parent_ref: Optional[str] = None,
 ) -> None:
     """
     Create commits on a remote branch for each commit on the local branch that's not on the remote
@@ -488,21 +489,32 @@ def main(
     ####### Verification steps - ensure that the script can run safely.                     ########
     ################################################################################################
 
-    # Get the 'expected parent' commit sha of the new commits that we want to push. we do this using
-    # git merge-base local_branch_name remote_name/remote_branch_name
-    merge_base_commit_oid: str = subprocess.run(
-        ["git", "merge-base", local_branch_name, f"{remote_name}/{remote_branch_name}"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    # The 'expected parent' commit sha for the first new commit. By default we compute it from
+    # merge-base(local, remote/branch). When parent_ref is given, we use that ref's OID directly --
+    # useful when local and remote point at the same commit (e.g., signing a PR's existing commits
+    # without first squashing them locally), in which case merge-base would collapse to the head.
+    if parent_ref:
+        parent_oid: str = subprocess.run(
+            ["git", "rev-parse", parent_ref],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    else:
+        parent_oid = subprocess.run(
+            ["git", "merge-base", local_branch_name, f"{remote_name}/{remote_branch_name}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
 
-    # Verify that the remote branch has not diverged from the local branch. Skipped when
-    # force_reset_ref is set, since we'll force-push to the merge-base ourselves below.
-    if not force_reset_ref:
+    # Verify that the remote branch has not diverged from the parent. Skipped when force_reset_ref
+    # or parent_ref is set; in both cases we either are about to overwrite the remote, or have
+    # explicitly chosen the parent independent of remote state.
+    if not force_reset_ref and not parent_ref:
         if (
             fetch_remote_branch_and_get_head_oid(remote_name, remote_branch_name)
-            != merge_base_commit_oid
+            != parent_oid
         ):
             raise RemoteBranchDivergedError(
                 f"The remote branch {remote_name}/{remote_branch_name} has diverged from the local "
@@ -513,20 +525,20 @@ def main(
     ####### Get the list of commits on the local branch that are not on the remote branch. #########
     ################################################################################################
 
-    # List of hashes for commits to push, oldest first. With force_reset_ref, we'll be force-pushing
-    # remote/branch to merge-base, so the relevant set is everything in local since merge-base
-    # (rather than everything in local not in remote, which can differ if local has merged from
-    # remote).
-    if force_reset_ref:
+    # List of hashes for commits to push, oldest first. When force_reset_ref or parent_ref is set,
+    # we walk from parent_oid (since the remote will be reset there or we're explicit about the
+    # fork point); otherwise we walk from the remote branch tip (current behavior).
+    if force_reset_ref or parent_ref:
         new_commit_local_hashes: list[str] = subprocess.run(
-            ["git", "rev-list", f"{merge_base_commit_oid}..{local_branch_name}"],
+            ["git", "rev-list", f"{parent_oid}..{local_branch_name}"],
             stdout=subprocess.PIPE,
             text=True,
             check=True,
         ).stdout.splitlines()[::-1]
         logging.info(
-            "Found %s commits on the local branch since merge-base.",
+            "Found %s commits on the local branch since %s.",
             len(new_commit_local_hashes),
+            parent_oid,
         )
     else:
         new_commit_local_hashes = get_local_commits_not_on_remote(
@@ -564,20 +576,20 @@ def main(
 
     # Done here, after all the slow file-change building, so the window between "remote branch
     # is at merge-base" and "first signed commit lands" is as short as possible. Any commits
-    # on the remote branch beyond merge-base will be lost.
+    # on the remote branch beyond parent_oid will be lost.
     if force_reset_ref:
         logging.warning(
-            "Force-pushing %s/%s to merge-base %s; remote commits beyond this point will be lost.",
+            "Force-pushing %s/%s to %s; remote commits beyond this point will be lost.",
             remote_name,
             remote_branch_name,
-            merge_base_commit_oid,
+            parent_oid,
         )
         subprocess.run(
             [
                 "git",
                 "push",
                 remote_name,
-                f"+{merge_base_commit_oid}:refs/heads/{remote_branch_name}",
+                f"+{parent_oid}:refs/heads/{remote_branch_name}",
             ],
             check=True,
         )
@@ -638,7 +650,7 @@ def main(
                     github_token=github_token,
                     repository_name_with_owner=repository_name_with_owner,
                     remote_branch_name=remote_branch_name,
-                    expected_head_oid=last_commit_pushed or merge_base_commit_oid,
+                    expected_head_oid=last_commit_pushed or parent_oid,
                     file_changes=file_changes_chunk,
                     message=chunk_msg,
                 )
@@ -725,6 +737,12 @@ if __name__ == "__main__":
         default=[],
         help="Drop additions/deletions matching this path or any path under it from each commit's file changes. Commits whose changes are entirely excluded are skipped. May be repeated.",
     )
+    parser.add_argument(
+        "--parent-ref",
+        dest="parent_ref",
+        default=None,
+        help="Use this ref's OID as the parent of the first new commit, instead of computing merge-base(local, remote/branch). Required when local and remote point at the same commit (e.g., signing a PR's existing commits without squashing). Pair with --force-reset-ref to actually move the remote branch there.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level)
@@ -744,4 +762,5 @@ if __name__ == "__main__":
         include_source_hash=args.include_source_hash,
         force_reset_ref=args.force_reset_ref,
         exclude_paths=args.exclude_paths,
+        parent_ref=args.parent_ref,
     )
