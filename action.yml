@@ -44,6 +44,9 @@ inputs:
   force_reset_ref:
     description: "If 'true', force-push the remote branch to the merge-base just before creating signed commits. Skips the divergence check; any commits on the remote branch beyond the merge-base will be lost."
     default: 'false'
+  exclude_paths:
+    description: "Newline-separated list of paths to exclude from each commit's file changes. Each line is matched against file paths as an exact match or as a directory prefix. Commits whose changes are entirely excluded are skipped."
+    default: ''
 runs:
   using: 'composite'
   steps:
@@ -68,6 +71,11 @@ runs:
         if [ "$FORCE_RESET_REF" = "true" ]; then
           EXTRA_ARGS+=(--force-reset-ref)
         fi
+        while IFS= read -r path; do
+          if [ -n "$path" ]; then
+            EXTRA_ARGS+=(--exclude-path "$path")
+          fi
+        done <<< "$EXCLUDE_PATHS"
         python ${{ github.action_path }}/create_commits.py "$GITHUB_TOKEN" "$REPO" "$LOCAL_BRANCH_NAME" "$REMOTE_NAME" "$REMOTE_BRANCH_NAME" "$LOG_LEVEL" "${EXTRA_ARGS[@]}"
       shell: bash
       env:
@@ -79,6 +87,7 @@ runs:
         LOG_LEVEL: ${{ inputs.log_level }}
         INCLUDE_SOURCE_HASH: ${{ inputs.include_source_hash }}
         FORCE_RESET_REF: ${{ inputs.force_reset_ref }}
+        EXCLUDE_PATHS: ${{ inputs.exclude_paths }}
     # The createCommitOnBranch endpoint will dynamically generate authorship and commit verification information, which will result in different commit hashes on the remote vs. local branch. 
     # If the creation of remote commits is successful, a final step runs. This step will reset the local branch to have the same authorship info, verification status, and therefore commit hash (which is deterministically derived from commit contents) as the remote. 
     - name: Reset the local branch to the remote branch

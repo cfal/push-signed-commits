@@ -436,6 +436,27 @@ def fetch_remote_branch_and_get_head_oid(
     ).stdout.strip()
 
 
+def filter_file_changes(
+    file_changes: FileChanges, exclude_paths: list[str]
+) -> FileChanges:
+    """
+    Drop any addition or deletion whose path equals an excluded path or is under it.
+    Trailing slashes on excluded paths are normalized away.
+    """
+    prefixes = [p.rstrip("/") for p in exclude_paths if p]
+
+    def excluded(path: str) -> bool:
+        for prefix in prefixes:
+            if path == prefix or path.startswith(prefix + "/"):
+                return True
+        return False
+
+    return FileChanges(
+        additions=[a for a in file_changes["additions"] if not excluded(a["path"])],
+        deletions=[d for d in file_changes["deletions"] if not excluded(d["path"])],
+    )
+
+
 def main(
     *,
     github_token: str,
@@ -445,6 +466,7 @@ def main(
     remote_branch_name: str,
     include_source_hash: bool = True,
     force_reset_ref: bool = False,
+    exclude_paths: Optional[list[str]] = None,
 ) -> None:
     """
     Create commits on a remote branch for each commit on the local branch that's not on the remote
@@ -532,6 +554,8 @@ def main(
         commit_message = CommitMessage(headline=headline, body=body)
 
         file_changes = get_file_changes_from_local_commit_hash(local_commit_hash)
+        if exclude_paths:
+            file_changes = filter_file_changes(file_changes, exclude_paths)
         new_commits_to_create.append((local_commit_hash, commit_message, file_changes))
 
     ################################################################################################
@@ -568,6 +592,16 @@ def main(
     remote_commit_hashes_created: list[str] = []
 
     for local_commit_hash, commit_message, file_changes in new_commits_to_create:
+
+        # Skip commits whose file changes were entirely excluded by --exclude-path.
+        # createCommitOnBranch rejects empty fileChanges anyway, and we don't want to
+        # surface that as an error.
+        if not file_changes["additions"] and not file_changes["deletions"]:
+            logging.info(
+                "Skipping local commit %s: all file changes were excluded.",
+                local_commit_hash,
+            )
+            continue
 
         # Verify that the latest commit on the remote branch is the expected parent of the commit
         # that we're about to create
@@ -684,6 +718,13 @@ if __name__ == "__main__":
         action="store_true",
         help="Force-push the remote branch to the merge-base immediately before creating signed commits. Any commits on the remote branch beyond the merge-base will be lost.",
     )
+    parser.add_argument(
+        "--exclude-path",
+        dest="exclude_paths",
+        action="append",
+        default=[],
+        help="Drop additions/deletions matching this path or any path under it from each commit's file changes. Commits whose changes are entirely excluded are skipped. May be repeated.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level)
@@ -702,4 +743,5 @@ if __name__ == "__main__":
         remote_branch_name=args.remote_branch_name,
         include_source_hash=args.include_source_hash,
         force_reset_ref=args.force_reset_ref,
+        exclude_paths=args.exclude_paths,
     )
